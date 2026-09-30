@@ -1,0 +1,53 @@
+# ============================================================
+#  导航框架 · 只上传【核心代码】
+#  ★ 场景数据 / 地图 / 轨迹 / 日志一律不传（含实验室布局信息）
+# ============================================================
+
+# ---- 数据与产物（★ 最重要的一条：场景图/地图/轨迹都在这里）----
+*.npz
+*.bag
+*.png
+*.jpg
+*.jpeg
+*.log
+*.zip
+*.tgz
+
+# ---- Python ----
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+
+# ---- 临时调试脚本 ----
+tools/dbg_*.py
+*.tmp
+*~
+
+# ---- 历史/一次性脚本（跑完就没用了）----
+run_viz2.sh
+run_viz3.sh
+run_viz4.sh
+run_viz5.sh
+tools/peek_*.sh
+tools/show_*.sh
+tools/sweep_*.sh
+tools/verify_iface.sh
+tools/test_clean_ws.sh
+tools/test_minimal_action.sh
+tools/rot_grid_view.sh
+tools/check_crlf.sh
+stat.sh
+check.sh
+kill.sh
+probe_map.py
+timeline_build.py
+bench.py
+
+# ---- 狗上的东西（含 IP / 密码习惯，不公开）----
+dogenv_run.sh
+sync_time.sh
+start_capo.sh
+stop_capo.sh
+start_nav_real.sh
+askpass.*

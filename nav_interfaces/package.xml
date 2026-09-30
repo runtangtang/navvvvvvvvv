@@ -1,0 +1,30 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>nav_interfaces</name>
+  <version>0.1.0</version>
+  <description>
+    导航组 → 组2 的任务接口
+
+    ★ 一份 .action 文件，双方【各自编译】—— 这是 ROS2 的用法，不是"谁给谁"。
+    ★ 组2 用客户端那套（send_goal / cancel / 收 feedback 和 result）
+      我们用服务端那套（收 goal → 导航 → 发 feedback 和 result）
+
+    定义见 action/NavigateTo.action
+  </description>
+  <maintainer email="todo@todo.com">导航组</maintainer>
+  <license>MIT</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+  <buildtool_depend>rosidl_default_generators</buildtool_depend>
+
+  <depend>std_msgs</depend>
+  <depend>geometry_msgs</depend>
+  <depend>action_msgs</depend>
+
+  <member_of_group>rosidl_interface_packages</member_of_group>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>
