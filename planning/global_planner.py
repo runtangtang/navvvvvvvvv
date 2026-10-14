@@ -212,8 +212,8 @@ def plan_path(grid: OccupancyGrid, start: Pose2D, goal: Pose2D,
         · 两个条件：pre 在【膨胀后的空地上】+ pre→goal 直着能过
           （任一不满足 ⇒ 试下一个 d）
         · 按顺序试，第一个可行的用；全部不行 ⇒ 退回普通规划（绝不更差）
-        · ★ d 必须 > follower.fine_range（0.5m）——
-          否则还没走到 pre 就被"距终点<0.5m 交给末端精调"截胡，等于白做
+        · ★ d 必须 > follower.fine_range(0.2m) + stop_tol(0.05m) ⇒ 建议 ≥0.3——
+          否则还没走到 pre 就被"距终点很近 ⇒ 交给末端精调"截胡，等于白做
         · 默认 () = 【关】（先在狗上验证过再默认开）
     """
     if start.frame != FRAME_SCENE or goal.frame != FRAME_SCENE:

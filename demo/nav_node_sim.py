@@ -53,8 +53,8 @@ ap.add_argument('--dynamic-avoid', action='store_true',
 ap.add_argument('--final-approach', default=None, metavar='D[,D2]',
                 help='★ 预瞄点（turn_shift 根治，默认【关】）：在终点背后 d 米放一个点，'
                      '让最后一段路的方向=目标朝向 ⇒ 不用"到了再大转"。'
-                     '可给阶梯（逗号分隔），如 0.8,0.6；都不可行则退回普通规划。'
-                     '★ d 必须 > 0.5（跟随器交给末端精调的距离），否则被截胡')
+                     '可给阶梯（逗号分隔），如 0.4,0.3；都不可行则退回普通规划。'
+                     '★ d 必须 > 0.2+0.05（跟随器交给末端精调的距离），建议 >=0.3')
 ap.add_argument('--grid', default=None,
                 help='★ 场景栅格 npz；不给就用 demo_scene.npz。'
                      '（2026-09-26 加：为了能在仿真里测带障碍的自定义场景，'

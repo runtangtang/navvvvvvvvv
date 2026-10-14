@@ -54,7 +54,8 @@ class NavigateToConfig:
     # ★★ 预瞄点（turn_shift 根治，2026-10-15）：非空 = 开。
     #    在终点背后 d 米放预瞄点，让【最后一段路的方向 = 目标朝向】⇒ 不用"到了再大转"。
     #    可给阶梯（按顺序试），如 (0.8, 0.6)；全部不可行 ⇒ 退回普通规划。
-    #    ★ d 必须 > follower.fine_range(0.5m)，否则会被末端精调截胡。
+    #    ★ d 必须 > follower.fine_range(0.2m) + stop_tol(0.05m) ⇒ 建议 ≥0.3，
+    #      否则会被末端精调截胡。
     #    ★ 默认 () = 关 —— 先在狗上验证过再默认开（用户定的）。
     final_approach_lengths: tuple = ()
     inflate_radius: float = 0.35     # ★ 车体半径，必须 ≥ 车体半宽才留得出余量
