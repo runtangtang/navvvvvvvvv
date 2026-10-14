@@ -40,6 +40,7 @@ class Plan:
     length: float = 0.0
     reason: str = ''
     grid_len: int = 0          # 平滑前的格子路径长度（诊断用）
+    final_approach_d: float = 0.0   # ★ 预瞄点用了多长（0 = 没用/关着）
 
 
 # ================================================================ 距离场
@@ -178,13 +179,42 @@ def densify(waypoints, max_seg: float = 0.50):
 
 
 # ================================================================ 主入口
+def _plan_to(g: OccupancyGrid, free: np.ndarray, start: Pose2D,
+             target_xy: Tuple[float, float]):
+    """Dijkstra 到 target（只到格）；返回 (cells, reason)，失败时 cells=None。"""
+    sc = nearest_free(free, g.world_to_cell(start.x, start.y))
+    tc = nearest_free(free, g.world_to_cell(target_xy[0], target_xy[1]))
+    if sc is None:
+        return None, 'start_blocked'
+    if tc is None:
+        return None, 'goal_blocked'
+    dist = dijkstra_free(free, tc)
+    if not np.isfinite(dist[sc]):
+        return None, 'no_path'
+    return extract_cells(dist, free, sc), 'ok'
+
+
 def plan_path(grid: OccupancyGrid, start: Pose2D, goal: Pose2D,
               inflate_radius: float = 0.35,
               smooth: bool = True,
-              max_seg: float = 0.50) -> Plan:
+              max_seg: float = 0.50,
+              final_approach_lengths: Tuple[float, ...] = ()) -> Plan:
     """场景系里，从 start 规划到 goal。
 
     inflate_radius: 车体半径。★ 必须 ≥ 车体半宽（GO2 是 0.35m），否则会蹭墙。
+
+    ★★ final_approach_lengths（2026-10-15 加，turn_shift 的根治）：
+      非空时，尝试让【最后一段路的方向 = 目标朝向】——
+      在终点【背后】（沿目标朝向的反方向）d 米放一个【预瞄点 pre】，
+      规划到 pre、末尾再补上 goal ⇒ 狗走到终点时已经朝对，不用"到了再大转"
+      （大转身会把身体挪偏 ~10cm ⇒ 之前要报 turn_shift 的那种）。
+
+        · 两个条件：pre 在【膨胀后的空地上】+ pre→goal 直着能过
+          （任一不满足 ⇒ 试下一个 d）
+        · 按顺序试，第一个可行的用；全部不行 ⇒ 退回普通规划（绝不更差）
+        · ★ d 必须 > follower.fine_range（0.5m）——
+          否则还没走到 pre 就被"距终点<0.5m 交给末端精调"截胡，等于白做
+        · 默认 () = 【关】（先在狗上验证过再默认开）
     """
     if start.frame != FRAME_SCENE or goal.frame != FRAME_SCENE:
         from core.types import FrameMismatch
@@ -193,21 +223,34 @@ def plan_path(grid: OccupancyGrid, start: Pose2D, goal: Pose2D,
 
     g = grid.inflated(inflate_radius)
     free = g.free_mask()
+    goal_xy = (goal.x, goal.y)
 
-    sc = g.world_to_cell(start.x, start.y)
-    gc = g.world_to_cell(goal.x, goal.y)
-    sc = nearest_free(free, sc)
-    gc = nearest_free(free, gc)
-    if sc is None:
-        return Plan(False, reason='start_blocked')
-    if gc is None:
-        return Plan(False, reason='goal_blocked')
+    # ---------- ★ 预瞄点（turn_shift 根治）----------
+    pre, d_used = None, 0.0
+    if final_approach_lengths:
+        sg = math.hypot(goal.x - start.x, goal.y - start.y)
+        for d in final_approach_lengths:
+            if d <= 0 or sg <= d + 0.05:
+                continue                      # 本来就近，别折腾
+            cand = (goal.x - d * math.cos(goal.yaw),
+                    goal.y - d * math.sin(goal.yaw))
+            if not g.is_free_xy(cand[0], cand[1]):
+                continue                      # pre 被占（比如终点背后是墙）
+            if not g.line_clear(cand, goal_xy):
+                continue                      # pre→goal 中途有障碍
+            pre, d_used = cand, d
+            break
 
-    dist = dijkstra_free(free, gc)
-    if not np.isfinite(dist[sc]):
-        return Plan(False, reason='no_path')
+    # ---------- 主规划（目标 = pre 或 goal）----------
+    cells, reason = _plan_to(g, free, start,
+                             pre if pre is not None else goal_xy)
+    if cells is None and pre is not None:
+        # ★ 退一步：pre 不通就按普通目标再来一次（绝不更差）
+        pre, d_used = None, 0.0
+        cells, reason = _plan_to(g, free, start, goal_xy)
+    if cells is None:
+        return Plan(False, reason=reason)
 
-    cells = extract_cells(dist, free, sc)
     raw_len = len(cells)
     if smooth:
         cells = smooth_path(cells, g)
@@ -216,6 +259,11 @@ def plan_path(grid: OccupancyGrid, start: Pose2D, goal: Pose2D,
     for (r, c) in cells:
         x, y = g.cell_to_world(r, c)
         wp.append(Pose2D(x, y, 0.0, frame=FRAME_SCENE))
+    if pre is not None:
+        # 末尾补上真终点；倒数第二个点【精确】落在 pre 上
+        # （不然方向会差半格 ≈ 1~2°，见 §验收）
+        wp.append(Pose2D(goal.x, goal.y, goal.yaw, frame=FRAME_SCENE))
+        wp[-2] = Pose2D(pre[0], pre[1], 0.0, frame=FRAME_SCENE)
     # 朝向：沿路径方向算，最后一个点用 goal 的朝向
     for i in range(len(wp) - 1):
         dx, dy = wp[i + 1].x - wp[i].x, wp[i + 1].y - wp[i].y
@@ -233,7 +281,7 @@ def plan_path(grid: OccupancyGrid, start: Pose2D, goal: Pose2D,
 
     L = sum(math.dist((wp[i].x, wp[i].y), (wp[i + 1].x, wp[i + 1].y))
             for i in range(len(wp) - 1))
-    return Plan(True, wp, L, 'ok', raw_len)
+    return Plan(True, wp, L, 'ok', raw_len, final_approach_d=d_used)
 
 
 def path_to_waypoint(plan: Plan, robot: Pose2D, lookahead: float = 0.8) -> Optional[Pose2D]:

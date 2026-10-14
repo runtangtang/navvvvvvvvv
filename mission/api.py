@@ -51,6 +51,12 @@ class NavigateToConfig:
     follower: FollowerConfig = field(default_factory=lambda: DEFAULT_FOLLOWER)
     dynamic_avoid: bool = False       # ★ 默认关；关时保持原有行为
     avoid: AvoidConfig = field(default_factory=AvoidConfig)
+    # ★★ 预瞄点（turn_shift 根治，2026-10-15）：非空 = 开。
+    #    在终点背后 d 米放预瞄点，让【最后一段路的方向 = 目标朝向】⇒ 不用"到了再大转"。
+    #    可给阶梯（按顺序试），如 (0.8, 0.6)；全部不可行 ⇒ 退回普通规划。
+    #    ★ d 必须 > follower.fine_range(0.5m)，否则会被末端精调截胡。
+    #    ★ 默认 () = 关 —— 先在狗上验证过再默认开（用户定的）。
+    final_approach_lengths: tuple = ()
     inflate_radius: float = 0.35     # ★ 车体半径，必须 ≥ 车体半宽才留得出余量
     # 漂移估计用的假设（★ 只是估计，不是测量）
     drift_per_meter: float = 0.02    # 每米漂 2%
@@ -380,7 +386,8 @@ class Navigator:
         if self.grid is not None:
             stages.append((Stage.PLANNING.value, time.time())); self._set_stage(Stage.PLANNING.value)
             plan = plan_path(self.grid, start_scene, goal_p,
-                             inflate_radius=self.cfg.inflate_radius)
+                             inflate_radius=self.cfg.inflate_radius,
+                             final_approach_lengths=self.cfg.final_approach_lengths)
             self.last_plan = plan
             if not plan.ok:
                 self.log('规划失败：%s' % plan.reason)
@@ -389,6 +396,13 @@ class Navigator:
                                  time.time() - t_start, float('nan'),
                                  self.source.name, float('nan'), stages)
             self.log('规划出 %d 个路点，长 %.2f m' % (len(plan.waypoints), plan.length))
+            if plan.final_approach_d > 0:
+                a_, b_ = plan.waypoints[-2], plan.waypoints[-1]
+                self.log('★ 预瞄点生效：离终点 %.2f m，最后一段沿目标朝向（%.0f°）'
+                         % (plan.final_approach_d,
+                            math.degrees(math.atan2(b_.y - a_.y, b_.x - a_.x))))
+            elif self.cfg.final_approach_lengths:
+                self.log('★ 预瞄点没启用（pre 被占/不通/距离太近）⇒ 按普通规划')
         else:
             self.log('没给栅格 —— 直接直线过去（不做避障）')
 

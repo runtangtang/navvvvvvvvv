@@ -75,6 +75,12 @@ def main():
                     help='★ 用正式 Action 接口（nav_interfaces）而不是 JSON/topic')
     ap.add_argument('--dynamic-avoid', action='store_true',
                     help='★ 开动态避障（默认关）。需要障碍点源才有意义')
+    ap.add_argument('--final-approach', default=None, metavar='D[,D2]',
+                    help='★ 预瞄点（turn_shift 根治，默认【关】）：在终点【背后】d 米'
+                         '（沿目标朝向的反方向）放一个点，让【最后一段路的方向=目标朝向】'
+                         '⇒ 走到终点时已经朝对，不用"到了再大转"（大转会挪偏 ~10cm）。'
+                         '可给阶梯（逗号分隔，按顺序试），如 0.8,0.6；都不可行则退回普通规划。'
+                         '★ d 必须 > 0.5（跟随器在 0.5m 处交给末端精调），否则被截胡')
     ap.add_argument('--capo-scale', type=float, default=1.0,
                     help='★ CAPO 尺度校正：把 CAPO 报的位移【乘】这个数。'
                          '2026-09-23 实测 k = CAPO/卷尺 = 0.954（7 次，稳）'
@@ -138,6 +144,8 @@ def main():
         approach=ApproachConfig(timeout=40.0),
         follower=FollowerConfig(timeout=90.0),
         dynamic_avoid=a.dynamic_avoid,
+        final_approach_lengths=(tuple(float(v) for v in a.final_approach.split(','))
+                                if a.final_approach else ()),
     )
     obstacles = RosObstacleSource(node) if a.dynamic_avoid else None
     nav = Navigator(capo, sink, cfg=cfg, grid=grid, log=log,

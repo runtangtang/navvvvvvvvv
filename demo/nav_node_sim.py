@@ -50,6 +50,11 @@ ap.add_argument('--action', action='store_true',
                 help='★ 用正式 Action 接口（nav_interfaces）而不是 JSON/topic')
 ap.add_argument('--dynamic-avoid', action='store_true',
                 help='★ 开动态避障（默认关）。需要障碍点源才有意义')
+ap.add_argument('--final-approach', default=None, metavar='D[,D2]',
+                help='★ 预瞄点（turn_shift 根治，默认【关】）：在终点背后 d 米放一个点，'
+                     '让最后一段路的方向=目标朝向 ⇒ 不用"到了再大转"。'
+                     '可给阶梯（逗号分隔），如 0.8,0.6；都不可行则退回普通规划。'
+                     '★ d 必须 > 0.5（跟随器交给末端精调的距离），否则被截胡')
 ap.add_argument('--grid', default=None,
                 help='★ 场景栅格 npz；不给就用 demo_scene.npz。'
                      '（2026-09-26 加：为了能在仿真里测带障碍的自定义场景，'
@@ -88,6 +93,8 @@ def main():
         approach=ApproachConfig(timeout=40.0),
         follower=FollowerConfig(timeout=90.0),
         dynamic_avoid=_a.dynamic_avoid,
+        final_approach_lengths=(tuple(float(v) for v in _a.final_approach.split(','))
+                                if _a.final_approach else ()),
     )
     obstacles = RosObstacleSource(node) if _a.dynamic_avoid else None
     nav = Navigator(capo, sink, cfg=cfg, grid=grid, log=log,
