@@ -125,17 +125,51 @@ class FollowerConfig:
     #   原来 0.25s（抄 UniGoal）⇒ 狗还在转就切"直走"⇒ 带着转弯余速边走边转。
     settle_s: float = 0.80
     # ---- 转向 ----
-    k_yaw: float = 1.2              # ★真机调：角度误差 → 角速度
-    wz_min: float = 0.40            # ✅实测：死区之上（0.19 死 / 0.5 活）
-    wz_max: float = 0.80            # ✅实测（2026-09-23）：0.4 只有 ~25% 效率、
-                                    #   0.6 有 52%、1.0 有 76% ⇒ 从 0.60 提到 0.80
+    # ★★ 2026-10-08 真机实测后上调（原来 1.2 / 0.40 / 0.80）
+    #
+    #   证据（当天做的对照实验）：
+    #     · 遥控器原地转 90° ⇒ CAPO 准确测到 91.3°，角速度 ~0.75 rad/s
+    #       ⇒ 狗本身能转得快，问题不在狗、也不在 CAPO
+    #     · 我们发 wz=0.40 时，狗【一跳一跳地几乎没转】，
+    #       3 秒只转 9.9°（≈0.06 rad/s，只有遥控的 1/12）
+    #       ⇒ 用户现场描述"一下一下的，有点跳跳的感觉"
+    #     · 而实测效率表（2026-09-23）：0.4→25%、0.6→52%、1.0→76%
+    #   ⇒ 0.40 这个"死区之上"其实【远不够】——它在死区边上，狗只能蹦不能转
+    #
+    #   ★ 历史：9-28 联调时"转了 3.1 秒只转 10°"也是同一个毛病，
+    #     只是那次偏差小、没致命；这次遇到 22.8° 的偏差就判"姿态卡死"了。
+    # ★★ 2026-10-08 当天第二次调整：从 (2.0/0.60/1.00) 退到 (1.5/0.60/0.80)
+    #   为什么退：激进版虽然"转得快 6 倍"，但【离线回归 P1 精度从 0.0145 翻到 0.0280】，
+    #   真机上更是走歪（转身把位置挪偏后，一路叠着偏）。
+    #   现在：wz_min 保留 0.60（这是"能转起来"的下限，实测 0.4 只有 25% 效率），
+    #         但 wz_max 和 k_yaw 退回来，别冲太快。
+    k_yaw: float = 1.5              # ★真机调：角度误差 → 角速度
+    wz_min: float = 0.60            # ✅实测：0.4→25% 效率（几乎转不动）、0.6→52%
+    wz_max: float = 0.80            # ★ 退回来：冲太快会把位置带偏
     # ---- 控制周期 ----
     control_hz: float = 50.0        # ★要实测：不假设 time.sleep 准（Python 有抖动）
     # ---- 失效保护 ----
     timeout: float = 90.0           # ★拍★ 分段上限（任务级预算在 NavigateToConfig）
     no_progress_s: float = 3.0      # ★真机调
-    no_progress_min_m: float = 0.03 # ★真机调
-    no_progress_min_deg: float = 10.0  # ★真机调
+    # ★ 卡死检测：走和转【各用各的指标】（★ 2026-10-15 拆开）
+    #   · 走（state='walk'）⇒ 只看【位置】：3 秒挪不到 3cm ⇒ blocked
+    #     （角度不参与 —— 推着东西时身体会晃，别把 blocked 晃没了）
+    #   · 转（state='turn'）⇒ 只看【角度】：3 秒转不到 3° ⇒ stuck
+    #     ★ 原来是 10°（统一判据，2026-09-22 定）——
+    #       会把"转得慢"误判成卡死：实测 wz=0.4 时 3 秒转 9.9° < 10° ⇒ 冤判
+    #     ⇒ 2026-10-15 用户定：转向判据 10 → 3（"几乎没动"才叫卡死）
+    no_progress_min_m: float = 0.03
+    no_progress_min_deg: float = 3.0
+
+    # ★★ 2026-10-08 加：避障等待的【上限】
+    #   为什么需要：等待期间会【重置】无进展窗口（设计如此 —— 见主循环注释，
+    #   目的是让"停着等人走过"不被误判）。但后果是【障碍一直不清】时会
+    #   一路等到总超时（90s）⇒ 报 timeout
+    #   ⇒ 组2 的 SPAV 【只在 reason=='blocked' 时】绕行，拿到 timeout
+    #     会走"安全熔断"直接终止整个任务
+    #   ⇒ 所以：等够这么久还堵着 ⇒ 报 blocked，交给上层绕行
+    #   ★ 7.0 是用户 2026-10-08 定的（给人走过去留够时间，又别让组2 等太久）
+    avoid_blocked_s: float = 7.0
     stale_s: float = 0.30           # ★拍★
 
 
@@ -189,6 +223,7 @@ class PathFollower:
         self._avoid_hold_until = 0.0
         self._avoid_waiting = False
         self._avoid_reason = None
+        self._avoid_since = None      # ★ 避障等待开始时刻（用于 avoid_blocked_s）
 
         # ★★ 守门：走廊半宽【必须小于】规划膨胀半径
         #   否则贴着路径的【静态】障碍（规划只保证 ≥inflate_radius）会被当成
@@ -276,6 +311,8 @@ class PathFollower:
                                          now + max(0.0, self.avoid.hold_s))
         waiting = stop_now or now < self._avoid_hold_until
         if waiting:
+            if not self._avoid_waiting:
+                self._avoid_since = now      # ★ 刚开始等，记下时刻
             if sensor_failed:
                 if self._avoid_reason != 'sensor_failed':
                     self.log('  SENSOR FAILURE: obstacle data unavailable; stop and wait')
@@ -292,6 +329,7 @@ class PathFollower:
             self.log('  ✅ 路径前方已清空，继续行走')
         self._avoid_waiting = False
         self._avoid_reason = None
+        self._avoid_since = None          # ★ 等待结束，清计时
         self._emit(v, state)
         return False
 
@@ -303,6 +341,7 @@ class PathFollower:
         self._avoid_hold_until = 0.0
         self._avoid_waiting = False
         self._avoid_reason = None
+        self._avoid_since = None
         tp = self.source.get()
         if tp is None:
             return FollowResult(False, 'no_pose', None, 0.0, 0, 0.0)
@@ -320,9 +359,14 @@ class PathFollower:
         i_wp = 1                       # 路点 0 是起点，从下一个开始
         state = 'turn'                 # 'turn' | 'walk'
         settle_until = 0.0
-        # ★ 卡死检测：位置和角度【都没动】才算卡住（统一判据，不再分阶段）
+        # ★ 卡死检测：走和转各用各的指标（★ 2026-10-15 拆开，见 FollowerConfig）
+        #   ★ 进展窗口【跨状态切换时重置】—— 否则会冤判：
+        #     "走了 3 秒、刚切到转" ⇒ 窗口里 yaw 几乎没变（走路本来就不修朝向）
+        #     ⇒ 一进 turn 就被误报"转不动"
+        #     （10-15 全量回归里真踩到：走廊用例被误报 stuck）
         chk_t = t0
         chk_pose = start
+        chk_state = state
 
         try:
             while True:
@@ -358,12 +402,31 @@ class PathFollower:
                 # 否则障碍停留 3 秒会让 follow() 退出，违背“停着等”的语义。
                 if self._avoid_waiting:
                     chk_t, chk_pose = now, pose
+                    # ★★ 2026-10-08：但【不能无限等】。
+                    #   等够 avoid_blocked_s 还堵着 ⇒ 报 blocked，交给上层绕行。
+                    #   为什么必须报 blocked（而不是让它耗到总超时）：
+                    #     组2 的 SPAV 【只在 reason=='blocked' 时】走绕行分支，
+                    #     拿到 timeout 会走"安全熔断"直接终止整个任务
+                    #     （2026-10-08 真机实测：等 90s 报 timeout ⇒ 他们的自愈没触发）
+                    if (self._avoid_since is not None
+                            and now - self._avoid_since > cfg.avoid_blocked_s):
+                        reason = 'blocked'
+                        self.log('  🚧 避障等待 %.1fs、障碍一直没清'
+                                 ' ⇒ blocked（交给上层绕行）' % cfg.avoid_blocked_s)
+                        break
 
-                # ---- 无进展：3 秒内【位置和角度都没变】才判 ----
+                # ★ 状态一切换（走↔转），进展窗口重新计（见上面 chk_state 的注释）
+                if state != chk_state:
+                    chk_t, chk_pose, chk_state = now, pose, state
+
+                # ---- 无进展：走和转【各用各的指标】（★ 2026-10-15 拆开）----
                 if not self._avoid_waiting and now - chk_t > cfg.no_progress_s:
                     dm = math.hypot(pose.x - chk_pose.x, pose.y - chk_pose.y)
                     da = abs(math.degrees(wrap(pose.yaw - chk_pose.yaw)))
-                    if dm < cfg.no_progress_min_m and da < cfg.no_progress_min_deg:
+                    walking = (state == 'walk')
+                    no_prog = (dm < cfg.no_progress_min_m if walking
+                               else da < cfg.no_progress_min_deg)
+                    if no_prog:
                         # ★★ 2026-09-28：区分 blocked / stuck —— 下游处理【完全不同】
                         #   · 走的状态下走不动 ⇒ 前方【有东西挡着】⇒ blocked
                         #     真机上"走不动"绝大多数就是前面有障碍（人/椅子/箱子）
@@ -373,7 +436,7 @@ class PathFollower:
                         #   ★ 为什么必须分清：组2 的 SPAV 状态机【只在 reason=='blocked'
                         #     时】走"绕行"分支，拿到别的会直接安全熔断退出整个任务
                         #     （他们的核心演示"推椅子→自动绕行"就靠这一条）
-                        if state == 'walk':
+                        if walking:
                             reason = 'blocked'
                             self.log('  🚧 前方受阻：%.1fs 内走不动（只挪 %.3fm）'
                                      ' ⇒ blocked（等一等 / 绕行可过）'

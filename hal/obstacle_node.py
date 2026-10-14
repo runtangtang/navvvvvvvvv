@@ -39,19 +39,61 @@ def parse_cloud(msg):
 
 
 ap = argparse.ArgumentParser()
-ap.add_argument('--zlo', type=float, default=0.8)     # 机体系高度下界（滤地面/自体）
-ap.add_argument('--zhi', type=float, default=2.0)     # 上界
-ap.add_argument('--rmin', type=float, default=1.2)    # 近场（雷达盲区+自体）
+# ★★ 2026-10-08：判据改了 —— 现在用的是官方机身系点云 cloud_base
+#   那里【地面是一条精确的水平线 z ≈ -0.29】
+#   ⇒ 判据简化成：【比地面高的点 = 障碍】
+#   zlo = 地面之上的门槛（-0.25 ⇒ 比地面高 4cm 以上才算）
+#   zhi = 上界（挡掉天花板之类，实测用不到）
+# ★★★ 2026-10-08 实测修正：-0.25 太松 —— 会把【地毯/地面起伏】放进来
+#   实测（真机、走廊里没人）：
+#       地面     z ≈ -0.29
+#       地毯/起伏 z ≈ -0.29 ~ -0.16（只比地面高 0.11~0.13m）← 这些是【假障碍】
+#       真障碍   z 明显更高（箱子顶到 +0.10，即高出地面 0.39m）
+#   ⇒ 门槛提到 -0.15（比地面高 ~0.14m）
+#     代价：比地面高不到 14cm 的东西看不见（狗本来也能跨过去，可接受）
+ap.add_argument('--zlo', type=float, default=-0.15)
+ap.add_argument('--zhi', type=float, default=1.5)
+ap.add_argument('--rmin', type=float, default=0.8)    # ★ 近场（滤掉雷达自身/狗自己）
 ap.add_argument('--rmax', type=float, default=8.0)
-ap.add_argument('--rate', type=float, default=10.0)   # 发送降频，进一步减小数据量
+ap.add_argument('--rate', type=float, default=10.0)   # 发送降频
+# ★★ 2026-10-08 加：累积窗口 [秒]
+#   为什么：点云太稀疏 —— 文档实测「人在 1.5m 处只有 3~8 个点」，
+#   真机实测：人走过正前方时，走廊里【只有某一瞬】有 13 点，前后都是 0
+#   ⇒ 单帧判据会"时有时无" ⇒ 狗走走停停
+#   ★ 解法：把最近 N 秒的点【累积】后再发 —— 站着不动的人会被多帧叠出来
+#   代价：延迟 +N 秒（狗才 0.5m/s，可接受）
+ap.add_argument('--acc-s', type=float, default=0.8)
+ap.add_argument('--acc-max', type=int, default=600)   # 累积点数上限（防爆）
 args = ap.parse_args()
 
 
-# 雷达 → 机身(IMU) 外参（本项目验证过的；★ z 那一行不翻转）
-EXT_R = np.array([[-1.0, 0.0, 0.0],
-                  [0.0, 1.0, 0.0],
-                  [0.0, 0.0, 1.0]])
-EXT_T = np.array([0.315, 0.0, 0.3])
+# ★★★★★ 2026-10-08 晚：★ 不用外参了 —— 改用【官方的机身系点云】
+#
+#   背景：我们用 /utlidar/cloud（★ frame_id = 'utlidar_lidar'，【雷达系】）
+#         自己乘一个外参转到机身系。那个外参一直是老大难：
+#     · 2026-09-21 发现抄了 CMU 的值（错）→ 改成 diag(-1,1,1)
+#     · 2026-10-08 发现它缺一个 ~15° 俯仰 ⇒ 地面在机体系里是【斜的】
+#       ⇒ 从前方 ~1m 起"爬"进高度带 ⇒ 地面被当成障碍 ⇒ 动态避障【一直误触发】
+#     · Codex 任务 04 离线标定出候选（15.0943° → 0.0227°），
+#       但发现原矩阵 det = -1（是【反射】不是旋转）⇒ 手性问题没根治
+#
+#   ★ 然后发现：狗上一直有个【官方转好的机身系点云】
+#        /utlidar/cloud_base      frame_id = 'base_link'
+#     实测（真机、箱子在前方）：
+#        · 地面  z ≈ -0.29，各距离桶的中位数都是 -0.27~-0.31  ⇒ ★【地面是平的】
+#        · 箱子在 1.5~2.5m 处被稳定看到（z 到 +0.10）
+#        · 正前方 ±0.8m × 2.5m：高于地面的点 【0 个】
+#     ⇒ ★★ 官方已经做了外参变换，而且【做对了】
+#     ⇒ 我们【不再自己做任何坐标变换】，外参全删
+#
+#   ⚠️ 回滚（如果要回到自己转的老路）：
+#        cp obstacle_node.py.bak-20261008-precallb obstacle_node.py
+#
+#   坐标系约定（base_link 是标准 ROS，REP-103）：
+#        x = 前   y = 【左】   z = 上
+#        地面 z ≈ -0.29（= base_link 原点离地约 0.29m）
+#      ★ 实测核对：前方 1.15m 处有一根 5 点的竖线在 y ≈ -0.95（= 右侧 0.95m），
+#        与标准约定一致（尚未做"人站左边"的正向验证 —— 待补）
 
 
 class DogObstacle(Node):
@@ -62,14 +104,19 @@ class DogObstacle(Node):
         # 位姿缓冲：按【到达时刻】存（不用 header.stamp —— 两个时钟不一样）
         self.buf = deque(maxlen=4000)
         self.create_subscription(Odometry, '/SMX/Odom', self.odom_cb, qos)
-        self.create_subscription(PointCloud2, '/utlidar/cloud', self.cloud_cb, qos)
+        # ★ 2026-10-08：改用【官方的机身系点云】（不用自己转外参了，见文件头）
+        self.create_subscription(PointCloud2, '/utlidar/cloud_base',
+                                 self.cloud_cb, qos)
         self.pub = self.create_publisher(Float32MultiArray,
                                          '/nav/obstacle_points', 10)
         self.n = 0
         self.t_last_send = 0.0
+        self.acc = deque()      # ★ 累积窗口：[(到达时刻, (N,3) 世界系点), ...]
         self.get_logger().info(
-            'dog_obstacle up  z∈[%.2f,%.2f]  r∈[%.1f,%.1f]  发送 %.0f Hz'
-            % (args.zlo, args.zhi, args.rmin, args.rmax, args.rate))
+            'dog_obstacle up  z∈[%.2f,%.2f]  r∈[%.1f,%.1f]  发送 %.0f Hz  '
+            '累积 %.2fs(上限 %d 点)'
+            % (args.zlo, args.zhi, args.rmin, args.rmax, args.rate,
+               args.acc_s, args.acc_max))
 
     def odom_cb(self, m):
         # ★ 回调绝不抛异常。
@@ -129,9 +176,9 @@ class DogObstacle(Node):
             self._publish(np.empty((0, 3), dtype=np.float32))
             return
 
-        # 雷达 → 机身
-        B = xyz @ EXT_R.T + EXT_T
-        # 高度带（滤地面 + 狗自己）
+        # ★ 2026-10-08：cloud_base 已经是【机身系】，【不再做任何坐标变换】
+        B = xyz
+        # 高度带：地面在 z ≈ -0.29（水平）⇒ 比地面高的就是障碍
         m1 = (B[:, 2] > args.zlo) & (B[:, 2] < args.zhi)
         B = B[m1]; tt = tt[m1]
         if not len(B):
@@ -158,7 +205,18 @@ class DogObstacle(Node):
         out[:, 1] = s * B[:, 0] + c * B[:, 1] + Y
         out[:, 2] = B[:, 2]                      # 机体系高度（正 = 比机身原点高）
 
-        self._publish(out)
+        # ★★ 2026-10-08：累积最近 acc_s 秒的点再发（对抗点云稀疏，见文件头说明）
+        self.acc.append((time.time(), out))
+        cutoff = time.time() - max(args.acc_s, 0.0)
+        while self.acc and self.acc[0][0] < cutoff:
+            self.acc.popleft()
+        if len(self.acc) > 1:
+            pts = np.vstack([a for _, a in self.acc])
+        else:
+            pts = out
+        if len(pts) > args.acc_max:              # 上限：留最新的
+            pts = pts[-args.acc_max:]
+        self._publish(pts)
 
 
 def main():

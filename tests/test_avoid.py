@@ -206,6 +206,55 @@ def t_static_at_inflate_radius_does_not_stop():
             % (d, cnt))
 
 
+def t_avoid_too_long_reports_blocked():
+    """★★ 2026-10-08 真机加的：避障【一直不清】时必须报 blocked，不能耗到总超时。
+
+    为什么（真机踩出来的）：
+      等待期间会【重置】无进展窗口 —— 这是【故意的】（让"停着等人走过"不被误判）。
+      但后果是：障碍一直不清时会一路等到【总超时 90s】⇒ 报 timeout。
+      而组2 的 SPAV 【只在 reason=='blocked' 时】绕行，拿到 timeout 会走
+      "安全熔断"直接终止整个任务。
+      2026-10-08 真机实测：狗停下来等了 90s ⇒ 报 timeout ⇒ ★ 组2 的自愈没触发。
+
+    修法：等够 avoid_blocked_s 还堵着 ⇒ 报 blocked，交给上层绕行。
+    """
+    rig = SimRig()
+    obstacles = FakeObstacleSource()
+    goal = S(2.0, 0.0)
+    wps = [S(0.0, 0.0), S(0.5, 0.0), S(1.0, 0.0), S(1.5, 0.0), goal]
+    plan = Plan(True, wps, 2.0)
+    cfg = FollowerConfig(v_cruise=0.8, settle_s=0.02, control_hz=100.0,
+                         fine_range=0.12, timeout=30.0, no_progress_s=1.0,
+                         avoid_blocked_s=0.8)      # ★ 测试里缩到 0.8s
+    avoid = AvoidConfig(enabled=True, lookahead_m=1.0, corridor_m=0.4,
+                        min_points=2, hold_s=0.20)
+    follower = PathFollower(cfg, rig, rig, avoid=avoid,
+                            obstacle_source=obstacles)
+    box = {}
+
+    def work():
+        box['result'] = follower.follow(plan, goal)
+
+    th = threading.Thread(target=work, daemon=True)
+    th.start()
+    try:
+        wait_until(lambda: rig.x() >= 0.60, 3.0, '仿真狗没走到注入位置')
+        x0 = rig.x()
+        # ★ 注入一个【永远不清】的障碍
+        obstacles.set([[x0 + 0.35, 0.0, 0.0], [x0 + 0.40, 0.02, 0.0]])
+        wait_until(lambda: rig.recent_zero(time.time() - 0.5), 2.0,
+                   '注入后没有收到零速')
+        th.join(8.0)
+        assert not th.is_alive(), '障碍一直不清时 follow() 没有自己退出'
+        r = box['result']
+        assert r.reason == 'blocked', (
+            '★ 避障一直不清时必须报 blocked（组2 只在 blocked 时绕行），实际 %r'
+            % r.reason)
+        assert not r.success
+    finally:
+        rig.close()
+
+
 def check(name, fn):
     try:
         fn()
@@ -224,6 +273,8 @@ if __name__ == '__main__':
     check('③ 点在走廊外 → 不停车并照常走完', t_outside_corridor_does_not_stop)
     check('④ 贴路径的静态障碍（≈规划膨胀处）不误触发',
           t_static_at_inflate_radius_does_not_stop)
+    check('⑤ ★ 障碍一直不清 → 等够 avoid_blocked_s 后报 blocked（不是 timeout）',
+          t_avoid_too_long_reports_blocked)
     print('\n结果：%d/%d 通过' % (len(PASS), len(PASS) + len(FAIL)))
     if FAIL:
         raise SystemExit(1)

@@ -43,27 +43,36 @@ class ApproachConfig:
     pos_tol: float = 0.03           # 位置容差 [m]
     coast: float = 0.031            # ★ 实测制动滑行 [m]（0.5 m/s 时）
     # ---- 朝向阶段 ----
-    k_ang: float = 1.5              # 位置阶段的朝向修正增益
+    # ★★ 2026-10-08：转向参数整套上调，和 path_follower 同步
+    #   依据：遥控转 90° 时 CAPO 测到 91.3°（狗能转、CAPO 准），
+    #         而我们发 0.40 时狗"一跳一跳几乎不转"（3 秒 9.9°）
+    #   详见 path_follower.FollowerConfig 里同一段注释
+    k_ang: float = 1.5              # 位置阶段的朝向修正增益（2026-10-08 退回）
     drive_align_deg: float = 10.0   # ★真机调：朝向偏多少就不许前进（只原地转）
                                     #   几何：10° 走 1m 偏 17cm；30° 偏 50cm（出走廊）
                                     #   和 path_follower 同一个教训：
                                     #   偏差 64° 还全速走 = 斜着冲 → 画弧甩出去
                                     #   （2026-09-22 端到端演示：末端精调因此画弧
                                     #     跑了 >0.8m 触发行程上限 abort）
-    wz_min: float = 0.40            # ★ 死区之上：需要转时至少给这么多
-    wz_max: float = 0.60
+    wz_min: float = 0.60            # ★★ 2026-10-08：0.40 → 0.60（实测 0.4 几乎转不动）
+    wz_max: float = 0.80            # ★★ 2026-10-08：0.60 → 0.80（当天先到 1.00 又退回）
     yaw_tol_deg: float = 3.0        # 朝向容差 [deg]
-    k_yaw: float = 1.2              # 朝向阶段的增益
+    k_yaw: float = 1.5              # ★★ 2026-10-08：1.2 → 1.5（当天先到 2.0 又退回）
     # ---- 其他 ----
     turn_deadband: float = 0.0      # ★ 默认 0（关）。开过会卡死，见文件头注释
     control_hz: float = 20.0
     # ---- 失效保护 ----
     timeout: float = 30.0           # 单阶段硬超时 [s]
-    # ★ 卡死检测：位置和角度【都没动】才算卡住（2026-09-22 用户定的统一判据）
-    #   旧版只盯位置 → 原地转向时必然误判（转了但没动位置），咬了自己四次
+    # ★ 卡死检测：走和转【各用各的指标】（★ 2026-10-15 拆开）
+    #   · 走（在发 vx）⇒ 只看【位置】：3 秒挪不到 3cm ⇒ blocked
+    #     （角度不参与 —— 推着东西时身体会晃，别把 blocked 晃没了）
+    #   · 转（在发 wz）⇒ 只看【角度】：3 秒转不到 3° ⇒ stuck
+    #     ★ 原来是 10°（"位置和角度都没动"的统一判据，2026-09-22 定）——
+    #       会把"转得慢"误判成卡死：实测 wz=0.4 时 3 秒转 9.9° < 10° ⇒ 冤判
+    #     ⇒ 2026-10-15 用户定：转向判据 10 → 3（"几乎没动"才叫卡死）
     no_progress_s: float = 3.0
     no_progress_min_m: float = 0.03
-    no_progress_min_deg: float = 10.0
+    no_progress_min_deg: float = 3.0
     max_travel_factor: float = 1.6  # 行程上限 = factor × 初始距离
     stale_s: float = 0.30           # 位姿断流阈值
 
@@ -244,6 +253,7 @@ class FineApproach:
         不再需要"每个阶段配一个指标"（那是旧设计的补丁）。"""
         cfg = self.cfg
         prog_t, prog_pose = None, None
+        prog_walking = None          # ★ 2026-10-15：记录上次的分类（走/转），切换时重置窗口
         last_pose = None
         n = 0
         reason = 'unknown'
@@ -281,21 +291,26 @@ class FineApproach:
                     reason = cmd.reason
                     break
 
-                # ---- 无进展：3 秒内【位置和角度都没变】才判 ----
-                if prog_t is None:
-                    prog_t, prog_pose = now, pose
+                # ---- 无进展：看【当时在让它干什么】，走和转各用各的指标 ----
+                #   （★ 2026-10-15 拆开：见配置里的注释 —— 旧版 10° 会冤判"转得慢"）
+                #   ★ 走↔转一切换，窗口【重新计】—— 否则"刚走完切成转"时，
+                #     窗口里 yaw 几乎没变（走路本来就不修朝向）⇒ 一进转就冤判
+                #     （10-15 全量回归里真踩到：走廊用例被误报 stuck）
+                walking = cmd.vel.vx > 0.01
+                if prog_t is None or walking != prog_walking:
+                    prog_t, prog_pose, prog_walking = now, pose, walking
                 elif now - prog_t > cfg.no_progress_s:
                     dm = math.hypot(pose.x - prog_pose.x, pose.y - prog_pose.y)
                     da = abs(math.degrees(wrap(pose.yaw - prog_pose.yaw)))
-                    if dm < cfg.no_progress_min_m and da < cfg.no_progress_min_deg:
+                    no_prog = (dm < cfg.no_progress_min_m if walking
+                               else da < cfg.no_progress_min_deg)
+                    if no_prog:
                         # ★★ 2026-09-28：区分 blocked / stuck —— 看【当时在让它干什么】
-                        #   cmd.vel.vx>0 ⇒ 位置阶段，在让它【走】却走不动
-                        #                  ⇒ 前方有东西挡着 ⇒ blocked（等一等/绕行能过）
-                        #   否则           ⇒ 朝向阶段，在让它【转】却转不动
-                        #                  ⇒ 姿态卡死/打滑 ⇒ stuck（要调整姿态）
+                        #   走 ⇒ 前方有东西挡着 ⇒ blocked（等一等/绕行能过）
+                        #   转 ⇒ 姿态卡死/打滑 ⇒ stuck（要调整姿态）
                         #   ★ 为什么必须分清：组2 的 SPAV 只在 reason=='blocked' 时
                         #     走"绕行"分支，拿到别的直接安全熔断退出整个任务
-                        if cmd.vel.vx > 0.01:
+                        if walking:
                             reason = 'blocked'
                             self.log('  🚧 前方受阻：%.1fs 内走不动（只挪 %.3fm）'
                                      ' ⇒ blocked' % (cfg.no_progress_s, dm))

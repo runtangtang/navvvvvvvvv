@@ -3,7 +3,8 @@ cd /mnt/d/迷雾通/nav || exit 1
 source $HOME/miniconda3/etc/profile.d/conda.sh >/dev/null 2>&1
 conda activate ros2
 RC=0
-for t in tests/test_frames.py tests/test_p2_plan.py tests/test_p3_faults.py; do
+for t in tests/test_frames.py tests/test_p2_plan.py tests/test_p3_faults.py \
+         tests/test_avoid.py tests/test_obstacle_source.py; do
     echo
     echo "==================== $t ===================="
     python3 "$t" 2>&1 | tail -6
