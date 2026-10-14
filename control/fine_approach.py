@@ -48,8 +48,13 @@ class ApproachConfig:
     #         而我们发 0.40 时狗"一跳一跳几乎不转"（3 秒 9.9°）
     #   详见 path_follower.FollowerConfig 里同一段注释
     k_ang: float = 1.5              # 位置阶段的朝向修正增益（2026-10-08 退回）
-    drive_align_deg: float = 10.0   # ★真机调：朝向偏多少就不许前进（只原地转）
-                                    #   几何：10° 走 1m 偏 17cm；30° 偏 50cm（出走廊）
+    drive_align_deg: float = 6.0    # ★真机调：朝向偏多少就不许前进（只原地转）
+                                    #   ★★ 2026-10-15：10 → 6（用户定：
+                                    #     "走之前方向基本对准 goal"）
+                                    #   几何：6° 走 1m 偏 10.5cm；10° 偏 17cm；30° 偏 50cm
+                                    #   超过阈值 ⇒ vx=0 先原地转（wz 照给），对准了再走
+                                    #   ★ 没超阈值也不是放开：走的时候仍用 k_ang 边
+                                    #     走边修（wz 有死区下限 0.6，10° 偏差 ~0.3s 修完）
                                     #   和 path_follower 同一个教训：
                                     #   偏差 64° 还全速走 = 斜着冲 → 画弧甩出去
                                     #   （2026-09-22 端到端演示：末端精调因此画弧
@@ -120,9 +125,17 @@ def compute_position_cmd(pose: Pose2D, goal: Pose2D, cfg: ApproachConfig) -> Cmd
     wz = max(-cfg.wz_max, min(cfg.wz_max, cfg.k_ang * ang_err))
     if cfg.turn_deadband > 0 and dist < cfg.turn_deadband:
         wz = 0.0
-    elif abs(ang_err) > math.radians(cfg.yaw_tol_deg) and abs(wz) < cfg.wz_min:
+    elif abs(ang_err) > math.radians(cfg.drive_align_deg) and abs(wz) < cfg.wz_min:
         # ★ 低于死区指令 = 狗不抬脚 ⇒ 比例项会把自己锁死
         wz = math.copysign(cfg.wz_min, ang_err)
+        # ★★ 2026-10-15：这里的门从 yaw_tol_deg 改成 drive_align_deg ——
+        #    两者必须一致，否则有一个【冻死区】：
+        #      vx=0 的条件是 |偏差| ≥ drive_align（不许走）
+        #      抬升死区的条件是 |偏差| > yaw_tol
+        #    若 yaw_tol > drive_align（比如 10 > 6），
+        #      偏差落在中间那带 ⇒ 不许走 + 比例项低于死区 ⇒ 狗【完全不动】
+        #      ⇒ 3 秒后被判"转不动 ⇒ stuck"（2026-10-15 P2 走廊用例实测踩到）
+        #    ⇒ 语义："不许走"的那一刻起，就必须给出一个真能转的指令。
 
     # ★ 朝向没对准就不许前进 —— 只原地转（wz 照给）
     aligned_enough = abs(ang_err) < math.radians(cfg.drive_align_deg)
