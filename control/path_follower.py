@@ -404,7 +404,15 @@ class PathFollower:
                     break
 
                 d_goal = math.hypot(goal.x - pose.x, goal.y - pose.y)
-                if d_goal <= cfg.fine_range:
+                # ★★ 2026-10-15：交接条件 = 距终点 ≤ fine_range【且】剩余路径【无转角】
+                #   为什么加后半条：末端精调是"直着朝目标走"、【不沿路径】——
+                #   若终点前还有拐角（哪怕只差 0.2m），直走会把拐角切掉（可能蹭到）。
+                #   无转角 = 当前目标路点已经推进到【终点本身】(i_wp 到最后)；
+                #   这时剩下的路本来就是一条直线，直着走不吃亏。
+                #   ★ i_wp 是本轮稍后才会推进的（差一个控制周期 ≈2.5cm），
+                #     只会让交接【晚一点】、不会提前 ⇒ 安全。
+                no_turn_left = (i_wp >= len(wps) - 1)
+                if d_goal <= cfg.fine_range and no_turn_left:
                     reason = 'handed_off'
                     break
 
