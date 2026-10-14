@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 """沿已规划路径的局部动态障碍停车层（纯几何，不依赖 ROS）。"""
+import math
 from dataclasses import dataclass
 from typing import List, Optional, Protocol, Sequence, Tuple
 
@@ -142,3 +143,34 @@ def should_stop(pts: Optional[np.ndarray],
     hit = points_in_corridor(pts, polyline, cfg.corridor_m)
     count = int(len(hit))
     return count >= max(1, int(cfg.min_points)), count
+
+
+def block_info(pts: Optional[np.ndarray],
+               polyline: Sequence[Tuple[float, float]],
+               corridor_m: float,
+               pose: Pose2D) -> Tuple[float, float]:
+    """★ 2026-10-15：给组2 报 blocked_distance / blocked_bearing 用。
+
+    取走廊里【离机器人最近】的那个点，转成【相对机体】的：
+        距离 [m] + 方位角 [rad]（前=0，逆时针为正，和 dog 的 yaw 同向）
+    组2 的编排器按  世界朝向 = cur_yaw + bearing  解算障碍的世界坐标。
+
+    ★ 走廊里没有点 / 感知失效 ⇒ (-1.0, 0.0)
+      —— 组2 的约定：距离 <0 = 没有信息（他们平滑回退走廊拓扑）
+    """
+    _require_scene(pose, 'block_info')
+    try:
+        hit = points_in_corridor(pts, polyline, corridor_m)
+    except Exception:
+        return -1.0, 0.0
+    if len(hit) == 0:
+        return -1.0, 0.0
+    xy = np.asarray(hit, dtype=float)[:, :2]
+    d2 = np.sum((xy - np.array([pose.x, pose.y])) ** 2, axis=1)
+    i = int(np.argmin(d2))
+    dx = float(xy[i, 0] - pose.x)
+    dy = float(xy[i, 1] - pose.y)
+    c, s = math.cos(pose.yaw), math.sin(pose.yaw)
+    fwd = dx * c + dy * s          # 机体前向分量
+    left = -dx * s + dy * c        # 机体左向分量
+    return math.hypot(dx, dy), math.atan2(left, fwd)

@@ -63,6 +63,14 @@ float32 uncertainty         # 我们对自己位置的【不确定度估计】[m
 string  reason              # 最终状态，取值见下
 float32 elapsed             # 从收到目标到结束 [s]
 
+# ★★ 障碍位置（2026-10-15 加）—— 只在 reason=blocked 时有意义
+#    取"走廊里离狗最近的那个障碍点"，转成【相对机体】的量：
+#      世界坐标解算： obs_x = final_pose.x + d·cos(final_yaw + bearing)
+#                    obs_y = final_pose.y + d·sin(final_yaw + bearing)
+#    ⚠️ 依赖动态避障开着 + 障碍节点在跑；否则恒为 -1（= 没有信息，按老逻辑处理）
+float32 blocked_distance    # 最近障碍【相对机体】距离 [m]；★ <0 = 没有信息
+float32 blocked_bearing     # 最近障碍【相对机体】方位角 [rad]；逆时针为正，前=0
+
 # reason 的取值（★ 下游处理方式完全不同，所以分开报）：
 #   arrived          到了
 #   timeout          超时              → 可重试

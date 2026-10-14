@@ -55,7 +55,7 @@ from typing import Callable, Optional
 
 from core.types import Pose2D, Velocity, ZERO_VEL, wrap
 from planning.global_planner import Plan
-from planning.local_avoid import (AvoidConfig, corridor_polyline,
+from planning.local_avoid import (AvoidConfig, block_info, corridor_polyline,
                                   should_stop)
 
 
@@ -195,6 +195,9 @@ class FollowResult:
     n_cycles: int
     traveled: float
     n_wp: int = 0          # 走过了几个路点
+    # ★ 2026-10-15：给组2 报"障碍在哪"（只有 reason=blocked 且有新鲜检测时才有值）
+    blocked_distance: float = -1.0   # 最近障碍【相对机体】距离 [m]；<0 = 没有信息
+    blocked_bearing: float = 0.0     # 最近障碍【相对机体】方位角 [rad]（逆时针为正）
 
 
 # ================================================================ 主类
@@ -234,6 +237,8 @@ class PathFollower:
         self._avoid_waiting = False
         self._avoid_reason = None
         self._avoid_since = None      # ★ 避障等待开始时刻（用于 avoid_blocked_s）
+        self._block_info = (-1.0, 0.0)   # ★ 最近障碍(距离,方位)，阻塞时更新
+        self._block_info_t = 0.0
 
         # ★★ 守门：走廊半宽【必须小于】规划膨胀半径
         #   否则贴着路径的【静态】障碍（规划只保证 ≥inflate_radius）会被当成
@@ -319,6 +324,11 @@ class PathFollower:
         if stop_now:
             self._avoid_hold_until = max(self._avoid_hold_until,
                                          now + max(0.0, self.avoid.hold_s))
+            # ★ 2026-10-15：顺手算一下"障碍在哪"（给组2 报 blocked_distance/bearing）
+            #   取走廊里离机器人【最近】的点，转成相对机体的距离+方位
+            self._block_info = block_info(pts, polyline, self.avoid.corridor_m,
+                                          pose)
+            self._block_info_t = now
         waiting = stop_now or now < self._avoid_hold_until
         if waiting:
             if not self._avoid_waiting:
@@ -352,6 +362,8 @@ class PathFollower:
         self._avoid_waiting = False
         self._avoid_reason = None
         self._avoid_since = None
+        self._block_info = (-1.0, 0.0)
+        self._block_info_t = 0.0
         tp = self.source.get()
         if tp is None:
             return FollowResult(False, 'no_pose', None, 0.0, 0, 0.0)
@@ -606,7 +618,13 @@ class PathFollower:
             self.sink.stop()
 
         ok = reason in ('handed_off',)
-        return FollowResult(ok, reason, last, time.time() - t0, n, traveled, n_wp)
+        # ★ 2026-10-15：报 blocked 时带上"障碍在哪"（给组2 blocked_distance/bearing）
+        #   只认【2 秒内】的新鲜检测 —— 陈年旧点不如老实说"没信息"（-1）
+        bd, bb = -1.0, 0.0
+        if reason == 'blocked' and (time.time() - self._block_info_t) < 2.0:
+            bd, bb = self._block_info
+        return FollowResult(ok, reason, last, time.time() - t0, n, traveled, n_wp,
+                            blocked_distance=bd, blocked_bearing=bb)
 
     # ------------------------------------------------------------
     def _g_safety(self):

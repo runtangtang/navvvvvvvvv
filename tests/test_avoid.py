@@ -251,6 +251,54 @@ def t_avoid_too_long_reports_blocked():
             '★ 避障一直不清时必须报 blocked（组2 只在 blocked 时绕行），实际 %r'
             % r.reason)
         assert not r.success
+        # ★ 2026-10-15 加：还要报"障碍在哪"（组2 靠它解算世界坐标）
+        #   障碍就注入在正前方 ~0.3m（狗停稳后）⇒ 距离 0.15~0.5m、方位角 ≈0
+        assert 0.15 < r.blocked_distance < 0.50, \
+            'blocked_distance=%.3f（应在 0.15~0.5）' % r.blocked_distance
+        assert abs(r.blocked_bearing) < 0.15, \
+            'blocked_bearing=%.3f（正前方应该≈0）' % r.blocked_bearing
+        print('         blocked_distance=%.2fm  bearing=%+.2frad ✅（障碍在哪）'
+              % (r.blocked_distance, r.blocked_bearing))
+    finally:
+        rig.close()
+
+
+def t_block_info_bearing_left():
+    """⑥ 障碍在【左前方】⇒ blocked_bearing 为正（相对机体、逆时针为正）"""
+    rig = SimRig()
+    obstacles = FakeObstacleSource()
+    goal = S(2.0, 0.0)
+    wps = [S(0.0, 0.0), S(0.5, 0.0), S(1.0, 0.0), S(1.5, 0.0), goal]
+    plan = Plan(True, wps, 2.0)
+    cfg = FollowerConfig(v_cruise=0.8, settle_s=0.02, control_hz=100.0,
+                         fine_range=0.12, timeout=30.0, no_progress_s=1.0,
+                         avoid_blocked_s=0.8)
+    avoid = AvoidConfig(enabled=True, lookahead_m=1.0, corridor_m=0.4,
+                        min_points=2, hold_s=0.20)
+    follower = PathFollower(cfg, rig, rig, avoid=avoid,
+                            obstacle_source=obstacles)
+    box = {}
+
+    def work():
+        box['result'] = follower.follow(plan, goal)
+
+    th = threading.Thread(target=work, daemon=True)
+    th.start()
+    try:
+        wait_until(lambda: rig.x() >= 0.60, 3.0, '仿真狗没走到注入位置')
+        x0 = rig.x()
+        # 左前方 ~(0.5, +0.25) ⇒ 方位角 atan2(0.25,0.5) ≈ +0.46 rad
+        obstacles.set([[x0 + 0.50, 0.25, 0.0], [x0 + 0.55, 0.23, 0.0]])
+        th.join(8.0)
+        assert not th.is_alive(), 'follow() 没有自己退出'
+        r = box['result']
+        assert r.reason == 'blocked', r.reason
+        assert r.blocked_bearing > 0.25, \
+            '左前方障碍的 bearing 应为正，实际 %.3f' % r.blocked_bearing
+        assert r.blocked_distance > 0.3, \
+            'blocked_distance=%.3f（应 >0.3）' % r.blocked_distance
+        print('         bearing=%+.2frad  distance=%.2fm ✅（左在前为正）'
+              % (r.blocked_bearing, r.blocked_distance))
     finally:
         rig.close()
 
@@ -275,6 +323,8 @@ if __name__ == '__main__':
           t_static_at_inflate_radius_does_not_stop)
     check('⑤ ★ 障碍一直不清 → 等够 avoid_blocked_s 后报 blocked（不是 timeout）',
           t_avoid_too_long_reports_blocked)
+    check('⑥ ★ 报 blocked 时带上障碍位置（距离 + 方位角，左为正）',
+          t_block_info_bearing_left)
     print('\n结果：%d/%d 通过' % (len(PASS), len(PASS) + len(FAIL)))
     if FAIL:
         raise SystemExit(1)

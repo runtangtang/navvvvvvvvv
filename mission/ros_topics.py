@@ -75,6 +75,9 @@ class NavResultMsg:
     uncertainty: float = float('nan')
     reason: str = ''
     elapsed: float = 0.0
+    # ★ 2026-10-15：障碍位置（reason=blocked 时有意义；<0 = 没有信息）
+    blocked_distance: float = -1.0
+    blocked_bearing: float = 0.0
 
 
 # ================================================================ 桥
@@ -293,7 +296,9 @@ class RosTopicBridge:
             internal_error=res.internal_error,
             uncertainty=res.uncertainty,
             reason=res.reason,
-            elapsed=elapsed)
+            elapsed=elapsed,
+            blocked_distance=getattr(res, 'blocked_distance', -1.0),
+            blocked_bearing=getattr(res, 'blocked_bearing', 0.0))
         self._publish(self._pub_result, asdict(r))
 
     def _publish(self, pub, d):

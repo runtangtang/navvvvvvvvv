@@ -239,6 +239,9 @@ class RosActionServer:
         r.uncertainty = float(unc)
         r.reason = str(reason)
         r.elapsed = float(time.time() - t0)
+        # ★ 2026-10-15：障碍位置（组2 的编排器按 cur_yaw + bearing 解算世界坐标）
+        r.blocked_distance = float(getattr(res, 'blocked_distance', -1.0))
+        r.blocked_bearing = float(getattr(res, 'blocked_bearing', 0.0))
         if final is not None:
             from geometry_msgs.msg import PoseStamped
             ps = PoseStamped()
@@ -264,7 +267,9 @@ class RosActionServer:
             'internal_error': float(internal_err),
             'uncertainty': float(unc),
             'reason': str(reason),
-            'elapsed': float(r.elapsed)})
+            'elapsed': float(r.elapsed),
+            'blocked_distance': float(getattr(res, 'blocked_distance', -1.0)),
+            'blocked_bearing': float(getattr(res, 'blocked_bearing', 0.0))})
 
         # ---- 标记结束（★ 被取消的话要报 canceled，不是 succeeded）----
         if self._cancel.is_set():

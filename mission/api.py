@@ -73,6 +73,9 @@ class NavResult:
     odometry_source: str
     internal_error: float            # 在我们自己坐标系里的到位误差（≈0，恒等式）
     stages: List[Tuple[str, float]] = field(default_factory=list)
+    # ★ 2026-10-15：给组2 报"障碍在哪"（reason=blocked 时才有意义）
+    blocked_distance: float = -1.0   # 最近障碍【相对机体】距离 [m]；<0 = 没有信息
+    blocked_bearing: float = 0.0     # 最近障碍【相对机体】方位角 [rad]（逆时针为正）
 
     def summary(self) -> str:
         pose = (('(%.3f, %.3f, %.1f°)' % (self.final_pose.x, self.final_pose.y,
@@ -466,7 +469,9 @@ class Navigator:
                                  math.hypot(goal_p.x - fr.final_pose.x,
                                             goal_p.y - fr.final_pose.y)
                                  if fr.final_pose else float('nan'),
-                                 stages)
+                                 stages,
+                                 blocked_distance=getattr(fr, 'blocked_distance', -1.0),
+                                 blocked_bearing=getattr(fr, 'blocked_bearing', 0.0))
             # 交接：剩最后一段交给末端精调
             stages.append((Stage.FINE_APPROACH.value, time.time())); self._set_stage(Stage.FINE_APPROACH.value)
             r = approach.go_to(goal_p, target_yaw=goal_p.yaw)
